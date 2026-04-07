@@ -25,6 +25,20 @@ require_once CSF_INCLUDES_DIR . '/csf.lfd.php';
 require_once CSF_INCLUDES_DIR . '/csf.iptables.php';
 require_once CSF_INCLUDES_DIR . '/csf.ports.php';
 
+// Load advanced features
+require_once CSF_INCLUDES_DIR . '/csf.geoip.php';
+require_once CSF_INCLUDES_DIR . '/csf.portscan.php';
+require_once CSF_INCLUDES_DIR . '/csf.ddos.php';
+require_once CSF_INCLUDES_DIR . '/csf.blocklists.php';
+
+// Load statistics, API, and admin modules
+require_once CSF_INCLUDES_DIR . '/csf.stats.php';
+require_once CSF_INCLUDES_DIR . '/csf.api.php';
+require_once CSF_INCLUDES_DIR . '/csf.admin.php';
+
+// Load UI helper functions
+require_once CSF_INCLUDES_DIR . '/csf.html.php';
+
 /**
  * Initialize CSF system
  * 

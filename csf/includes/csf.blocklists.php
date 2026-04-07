@@ -1,425 +1,455 @@
 <?php
 /**
- * CSF Blocklist Management Functions
- * Handles third-party blocklist integration (spamhaus, etc.)
+ * CSF Blocklists Module
+ * Manages third-party IP blocklists and blacklists
  */
 
 /**
- * Get available blocklists
+ * Get list of configured blocklists
  * 
- * @return array Available blocklists
+ * @return array Blocklists
  */
-function csf_get_available_blocklists() {
+function csf_blocklist_get_list() {
+    $blocklist_file = CSF_CONFIG_DIR . '/blocklists.json';
+    
+    if (!csf_file_exists($blocklist_file)) {
+        return csf_blocklist_get_defaults();
+    }
+    
+    $content = csf_file_read($blocklist_file);
+    $blocklists = json_decode($content, true);
+    
+    if (!is_array($blocklists)) {
+        return csf_blocklist_get_defaults();
+    }
+    
+    return $blocklists;
+}
+
+/**
+ * Get default blocklists
+ * 
+ * @return array Default blocklists
+ */
+function csf_blocklist_get_defaults() {
     return array(
-        'spamhaus_zen' => array(
-            'name' => 'Spamhaus ZEN',
-            'url' => 'https://www.spamhaus.org',
-            'description' => 'Spamhaus Zero Tolerance Blacklist',
-            'type' => 'dnsbl',
-            'enabled' => false,
+        'abuse_net' => array(
+            'name' => 'AbuseIPDB',
+            'url' => 'https://www.abuseipdb.com/api/v2/download',
+            'type' => 'ip_list',
+            'enabled' => 0,
+            'update_interval' => 86400,
+            'last_update' => 0,
+            'count' => 0
+        ),
+        'stopforumspam' => array(
+            'name' => 'StopForumSpam',
+            'url' => 'http://www.stopforumspam.com/downloads/toxic_ips.txt',
+            'type' => 'ip_list',
+            'enabled' => 0,
+            'update_interval' => 86400,
+            'last_update' => 0,
+            'count' => 0
         ),
         'spamhaus_drop' => array(
             'name' => 'Spamhaus DROP',
-            'url' => 'https://www.spamhaus.org',
-            'description' => 'Spamhaus Don\'t Route Or Peer',
-            'type' => 'iplist',
-            'enabled' => false,
-        ),
-        'abuseipdb' => array(
-            'name' => 'AbuseIPDB',
-            'url' => 'https://abuseipdb.com',
-            'description' => 'Community-powered IP reputation database',
-            'type' => 'api',
-            'enabled' => false,
+            'url' => 'https://www.spamhaus.org/drop/drop.txt',
+            'type' => 'cidr_list',
+            'enabled' => 0,
+            'update_interval' => 86400,
+            'last_update' => 0,
+            'count' => 0
         ),
         'maxmind_geoip' => array(
             'name' => 'MaxMind GeoIP',
-            'url' => 'https://www.maxmind.com',
-            'description' => 'Geographic IP database',
-            'type' => 'database',
-            'enabled' => false,
-        ),
-        'team_cymru' => array(
-            'name' => 'Team Cymru',
-            'url' => 'https://www.team-cymru.com',
-            'description' => 'IP reputation and netblock information',
-            'type' => 'api',
-            'enabled' => false,
-        ),
+            'url' => 'https://geoip.maxmind.com/download/geoip/database/GeoLite2-Country-CSV.zip',
+            'type' => 'geoip',
+            'enabled' => 0,
+            'update_interval' => 604800,
+            'last_update' => 0,
+            'count' => 0
+        )
     );
 }
 
 /**
- * Enable blocklist
+ * Add custom blocklist
  * 
- * @param string $blocklist_id Blocklist identifier
- * @return bool True on success
+ * @param string $id Blocklist ID
+ * @param array $data Blocklist data
+ * @return bool
  */
-function csf_enable_blocklist($blocklist_id) {
-    if (empty($blocklist_id)) {
-        csf_log("ERROR: Empty blocklist ID provided", "error");
+function csf_blocklist_add($id, $data) {
+    if (empty($id) || !is_array($data)) {
         return false;
     }
-
-    // Sanitize blocklist ID
-    $blocklist_id = preg_replace('/[^a-zA-Z0-9_]/', '', $blocklist_id);
-    if (empty($blocklist_id)) {
-        csf_log("ERROR: Invalid blocklist ID format", "error");
+    
+    if (empty($data['name']) || empty($data['url'])) {
+        csf_log('Missing required blocklist fields', 'BLOCKLIST', 'WARN');
         return false;
     }
-
-    // Check if blocklist exists
-    $available = csf_get_available_blocklists();
-    if (!isset($available[$blocklist_id])) {
-        csf_log("ERROR: Unknown blocklist: $blocklist_id", "error");
+    
+    $blocklists = csf_blocklist_get_list();
+    
+    if (isset($blocklists[$id])) {
+        csf_log('Blocklist already exists: ' . $id, 'BLOCKLIST', 'WARN');
         return false;
     }
-
-    // Save to enabled blocklists file
-    $enabled_file = CSF_VAR_DIR . '/blocklists_enabled.list';
-    $entry = "$blocklist_id|" . time() . "\n";
-
-    if (!csf_append_file($enabled_file, $entry)) {
-        csf_log("ERROR: Failed to enable blocklist: $blocklist_id", "error");
-        return false;
+    
+    $data['enabled'] = isset($data['enabled']) ? (int)$data['enabled'] : 0;
+    $data['update_interval'] = isset($data['update_interval']) ? (int)$data['update_interval'] : 86400;
+    $data['last_update'] = 0;
+    $data['count'] = 0;
+    
+    $blocklists[$id] = $data;
+    
+    if (csf_blocklist_save($blocklists)) {
+        csf_log('Blocklist added: ' . $id, 'BLOCKLIST');
+        return true;
     }
-
-    csf_log_rule_change('ENABLE', 'BLOCKLIST', $blocklist_id, 'system');
-    csf_log("Blocklist enabled: $blocklist_id", "info");
-
-    return true;
-}
-
-/**
- * Disable blocklist
- * 
- * @param string $blocklist_id Blocklist identifier
- * @return bool True on success
- */
-function csf_disable_blocklist($blocklist_id) {
-    if (empty($blocklist_id)) {
-        csf_log("ERROR: Empty blocklist ID provided", "error");
-        return false;
-    }
-
-    // Sanitize blocklist ID
-    $blocklist_id = preg_replace('/[^a-zA-Z0-9_]/', '', $blocklist_id);
-    if (empty($blocklist_id)) {
-        csf_log("ERROR: Invalid blocklist ID format", "error");
-        return false;
-    }
-
-    // Read enabled blocklists
-    $enabled_file = CSF_VAR_DIR . '/blocklists_enabled.list';
-    $lines = csf_read_file_lines($enabled_file);
-
-    if ($lines === false) {
-        return false;
-    }
-
-    // Filter out the blocklist
-    $updated_lines = array();
-    $found = false;
-
-    foreach ($lines as $line) {
-        $line = trim($line);
-        if (empty($line)) {
-            continue;
-        }
-
-        $parts = explode('|', $line);
-        if ($parts[0] === $blocklist_id) {
-            $found = true;
-            continue;
-        }
-
-        $updated_lines[] = $line;
-    }
-
-    // Write back
-    $content = implode("\n", $updated_lines);
-    if (!empty($content)) {
-        $content .= "\n";
-    }
-
-    if (!csf_write_file($enabled_file, $content)) {
-        csf_log("ERROR: Failed to disable blocklist: $blocklist_id", "error");
-        return false;
-    }
-
-    csf_log_rule_change('DISABLE', 'BLOCKLIST', $blocklist_id, 'system');
-    csf_log("Blocklist disabled: $blocklist_id", "info");
-
-    return $found;
-}
-
-/**
- * Get enabled blocklists
- * 
- * @return array Array of enabled blocklists
- */
-function csf_get_enabled_blocklists() {
-    $enabled_file = CSF_VAR_DIR . '/blocklists_enabled.list';
-    $lines = csf_read_file_lines($enabled_file);
-
-    if ($lines === false) {
-        return array();
-    }
-
-    $enabled = array();
-
-    foreach ($lines as $line) {
-        $line = trim($line);
-        if (empty($line)) {
-            continue;
-        }
-
-        $parts = explode('|', $line);
-        if (count($parts) < 1) {
-            continue;
-        }
-
-        $blocklist_id = $parts[0];
-        $timestamp = isset($parts[1]) ? (int)$parts[1] : 0;
-
-        $enabled[] = array(
-            'id' => $blocklist_id,
-            'timestamp' => $timestamp,
-            'timestamp_human' => date('Y-m-d H:i:s', $timestamp),
-        );
-    }
-
-    return $enabled;
-}
-
-/**
- * Update blocklist data (download latest)
- * 
- * @param string $blocklist_id Blocklist identifier
- * @param string $source_url URL to download blocklist from
- * @return bool True on success
- */
-function csf_update_blocklist($blocklist_id, $source_url) {
-    if (empty($blocklist_id) || empty($source_url)) {
-        csf_log("ERROR: Empty blocklist ID or URL provided", "error");
-        return false;
-    }
-
-    // Sanitize inputs
-    $blocklist_id = preg_replace('/[^a-zA-Z0-9_]/', '', $blocklist_id);
-    if (empty($blocklist_id)) {
-        csf_log("ERROR: Invalid blocklist ID format", "error");
-        return false;
-    }
-
-    if (!csf_validate_url($source_url)) {
-        csf_log("ERROR: Invalid blocklist URL: $source_url", "error");
-        return false;
-    }
-
-    // Download blocklist
-    $content = csf_download_blocklist($source_url);
-    if ($content === false) {
-        csf_log("ERROR: Failed to download blocklist: $blocklist_id", "error");
-        return false;
-    }
-
-    // Save to file
-    $blocklist_file = CSF_VAR_DIR . '/blocklists/' . $blocklist_id . '.list';
-
-    if (!csf_write_file($blocklist_file, $content, 0644)) {
-        csf_log("ERROR: Failed to save blocklist file: $blocklist_id", "error");
-        return false;
-    }
-
-    // Update last download time
-    $metadata_file = CSF_VAR_DIR . '/blocklists/' . $blocklist_id . '.meta';
-    $metadata = json_encode(array(
-        'id' => $blocklist_id,
-        'url' => $source_url,
-        'updated' => time(),
-        'lines' => count(explode("\n", $content)),
-    ));
-
-    csf_write_file($metadata_file, $metadata, 0644);
-
-    csf_log("Blocklist updated: $blocklist_id (Lines: " . count(explode("\n", $content)) . ")", "info");
-
-    return true;
-}
-
-/**
- * Download blocklist from URL
- * 
- * @param string $url URL to download from
- * @param int $timeout Download timeout in seconds
- * @return string|bool Downloaded content or false on error
- */
-function csf_download_blocklist($url, $timeout = 30) {
-    if (empty($url)) {
-        csf_log("ERROR: Empty URL provided", "error");
-        return false;
-    }
-
-    if (!csf_validate_url($url)) {
-        csf_log("ERROR: Invalid URL: $url", "error");
-        return false;
-    }
-
-    // Use cURL if available
-    if (function_exists('curl_init')) {
-        return csf_download_via_curl($url, $timeout);
-    }
-
-    // Fall back to file_get_contents
-    if (ini_get('allow_url_fopen')) {
-        return csf_download_via_fopen($url, $timeout);
-    }
-
-    csf_log("ERROR: No download method available", "error");
+    
     return false;
 }
 
 /**
- * Download file via cURL
+ * Remove blocklist
  * 
- * @param string $url URL to download
- * @param int $timeout Timeout in seconds
- * @return string|bool Downloaded content or false
+ * @param string $id Blocklist ID
+ * @return bool
  */
-function csf_download_via_curl($url, $timeout = 30) {
-    $ch = curl_init();
-
-    curl_setopt_array($ch, array(
-        CURLOPT_URL => $url,
-        CURLOPT_TIMEOUT => $timeout,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_SSL_VERIFYPEER => true,
-        CURLOPT_USERAGENT => 'CSF/14.0.0 (PHP)',
-    ));
-
-    $content = curl_exec($ch);
-
-    if ($content === false) {
-        csf_log("ERROR: cURL download failed: " . curl_error($ch), "error");
-        curl_close($ch);
+function csf_blocklist_remove($id) {
+    if (empty($id)) {
         return false;
     }
-
-    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    if ($http_code !== 200) {
-        csf_log("ERROR: HTTP error $http_code when downloading blocklist", "error");
+    
+    $blocklists = csf_blocklist_get_list();
+    
+    if (!isset($blocklists[$id])) {
         return false;
     }
-
-    return $content;
+    
+    unset($blocklists[$id]);
+    
+    if (csf_blocklist_save($blocklists)) {
+        csf_log('Blocklist removed: ' . $id, 'BLOCKLIST');
+        return true;
+    }
+    
+    return false;
 }
 
 /**
- * Download file via file_get_contents
+ * Update blocklist from remote source
  * 
- * @param string $url URL to download
- * @param int $timeout Timeout in seconds
- * @return string|bool Downloaded content or false
+ * @param string $id Blocklist ID
+ * @return bool
  */
-function csf_download_via_fopen($url, $timeout = 30) {
+function csf_blocklist_update($id) {
+    if (empty($id)) {
+        return false;
+    }
+    
+    $blocklists = csf_blocklist_get_list();
+    
+    if (!isset($blocklists[$id])) {
+        csf_log('Blocklist not found: ' . $id, 'BLOCKLIST', 'WARN');
+        return false;
+    }
+    
+    $blocklist = $blocklists[$id];
+    
+    if (empty($blocklist['url'])) {
+        return false;
+    }
+    
+    $content = csf_blocklist_download($blocklist['url']);
+    
+    if (!$content) {
+        csf_log('Failed to download blocklist: ' . $id, 'BLOCKLIST', 'ERROR');
+        return false;
+    }
+    
+    $ips = csf_blocklist_parse($content, $blocklist['type']);
+    
+    if (empty($ips)) {
+        csf_log('No IPs found in blocklist: ' . $id, 'BLOCKLIST', 'WARN');
+        return false;
+    }
+    
+    $blocklist_data_file = CSF_VAR_DIR . '/blocklists/' . $id . '.json';
+    
+    if (!is_dir(dirname($blocklist_data_file))) {
+        @mkdir(dirname($blocklist_data_file), 0755, true);
+    }
+    
+    $data = array(
+        'id' => $id,
+        'name' => $blocklist['name'],
+        'type' => $blocklist['type'],
+        'ips' => $ips,
+        'count' => count($ips),
+        'updated' => time()
+    );
+    
+    if (!csf_file_write($blocklist_data_file, json_encode($data, JSON_PRETTY_PRINT))) {
+        csf_log('Failed to write blocklist data: ' . $id, 'BLOCKLIST', 'ERROR');
+        return false;
+    }
+    
+    $blocklists[$id]['last_update'] = time();
+    $blocklists[$id]['count'] = count($ips);
+    
+    if (csf_blocklist_save($blocklists)) {
+        csf_log('Blocklist updated: ' . $id . ' (' . count($ips) . ' IPs)', 'BLOCKLIST');
+        
+        if ($blocklist['enabled']) {
+            csf_blocklist_apply($id);
+        }
+        
+        return true;
+    }
+    
+    return false;
+}
+
+/**
+ * Download blocklist content
+ * 
+ * @param string $url Blocklist URL
+ * @return string|false Content or false
+ */
+function csf_blocklist_download($url) {
     $context = stream_context_create(array(
         'http' => array(
-            'timeout' => $timeout,
-            'user_agent' => 'CSF/14.0.0 (PHP)',
-        ),
-        'https' => array(
-            'timeout' => $timeout,
-            'user_agent' => 'CSF/14.0.0 (PHP)',
-        ),
+            'timeout' => 30,
+            'user_agent' => 'CSF-Firewall/1.0',
+            'follow_location' => 1,
+            'max_redirects' => 5
+        )
     ));
-
+    
     $content = @file_get_contents($url, false, $context);
-
-    if ($content === false) {
-        csf_log("ERROR: file_get_contents download failed for: $url", "error");
-        return false;
-    }
-
+    
     return $content;
 }
 
 /**
- * Check if IP is in blocklist
+ * Parse blocklist content
  * 
- * @param string $ip IP address to check
- * @param string $blocklist_id Optional specific blocklist to check
- * @return bool True if IP is in blocklist
+ * @param string $content List content
+ * @param string $type List type (ip_list, cidr_list, geoip)
+ * @return array Parsed IPs
  */
-function csf_is_ip_in_blocklist($ip, $blocklist_id = '') {
-    if (!csf_validate_ip($ip)) {
-        return false;
-    }
-
-    $blocklists_dir = CSF_VAR_DIR . '/blocklists';
-
-    if (!empty($blocklist_id)) {
-        // Check specific blocklist
-        $blocklist_file = $blocklists_dir . '/' . preg_replace('/[^a-zA-Z0-9_]/', '', $blocklist_id) . '.list';
-
-        if (!file_exists($blocklist_file)) {
-            return false;
+function csf_blocklist_parse($content, $type = 'ip_list') {
+    $ips = array();
+    
+    if ($type === 'ip_list') {
+        $lines = explode("\n", $content);
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if (empty($line) || substr($line, 0, 1) === '#') {
+                continue;
+            }
+            
+            if (csf_validate_ip($line)) {
+                $ips[] = $line;
+            }
         }
-
-        return csf_ip_in_blocklist_file($ip, $blocklist_file);
-    }
-
-    // Check all enabled blocklists
-    $enabled = csf_get_enabled_blocklists();
-
-    foreach ($enabled as $blocklist) {
-        $blocklist_file = $blocklists_dir . '/' . $blocklist['id'] . '.list';
-
-        if (file_exists($blocklist_file)) {
-            if (csf_ip_in_blocklist_file($ip, $blocklist_file)) {
-                return true;
+    } elseif ($type === 'cidr_list') {
+        $lines = explode("\n", $content);
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if (empty($line) || substr($line, 0, 1) === ';') {
+                continue;
+            }
+            
+            if (csf_validate_cidr($line)) {
+                $ips[] = $line;
             }
         }
     }
-
-    return false;
+    
+    return array_unique($ips);
 }
 
 /**
- * Check if IP is in blocklist file
+ * Apply blocklist to firewall
  * 
- * @param string $ip IP address
- * @param string $blocklist_file Path to blocklist file
- * @return bool True if IP is in file
+ * @param string $id Blocklist ID
+ * @return bool
  */
-function csf_ip_in_blocklist_file($ip, $blocklist_file) {
-    if (!file_exists($blocklist_file) || !is_readable($blocklist_file)) {
+function csf_blocklist_apply($id) {
+    $blocklist_data_file = CSF_VAR_DIR . '/blocklists/' . $id . '.json';
+    
+    if (!csf_file_exists($blocklist_data_file)) {
         return false;
     }
-
-    $lines = csf_read_file_lines($blocklist_file);
-
-    if ($lines === false) {
+    
+    $content = csf_file_read($blocklist_data_file);
+    $data = json_decode($content, true);
+    
+    if (!is_array($data) || empty($data['ips'])) {
         return false;
     }
-
-    foreach ($lines as $line) {
-        $line = trim($line);
-
-        if (empty($line) || strpos($line, '#') === 0) {
-            continue;
-        }
-
-        // Check both single IPs and CIDR ranges
-        if (csf_ip_in_cidr($ip, $line)) {
-            return true;
+    
+    $reason = 'Blocklist: ' . $data['name'];
+    $added = 0;
+    
+    foreach ($data['ips'] as $ip) {
+        if (csf_iptables_add_ip($ip, 'BLOCK', $reason)) {
+            $added++;
         }
     }
-
-    return false;
+    
+    csf_log('Applied blocklist ' . $id . ': ' . $added . ' IPs blocked', 'BLOCKLIST');
+    
+    return true;
 }
 
-?>
+/**
+ * Remove blocklist from firewall
+ * 
+ * @param string $id Blocklist ID
+ * @return bool
+ */
+function csf_blocklist_remove_rules($id) {
+    $blocklist_data_file = CSF_VAR_DIR . '/blocklists/' . $id . '.json';
+    
+    if (!csf_file_exists($blocklist_data_file)) {
+        return false;
+    }
+    
+    $content = csf_file_read($blocklist_data_file);
+    $data = json_decode($content, true);
+    
+    if (!is_array($data) || empty($data['ips'])) {
+        return false;
+    }
+    
+    $removed = 0;
+    
+    foreach ($data['ips'] as $ip) {
+        if (csf_iptables_remove_ip($ip)) {
+            $removed++;
+        }
+    }
+    
+    csf_log('Removed blocklist ' . $id . ': ' . $removed . ' IPs unblocked', 'BLOCKLIST');
+    
+    return true;
+}
+
+/**
+ * Get blocklist statistics
+ * 
+ * @return array Statistics
+ */
+function csf_blocklist_get_stats() {
+    $blocklists = csf_blocklist_get_list();
+    $stats = array(
+        'total_lists' => count($blocklists),
+        'enabled' => 0,
+        'total_ips' => 0,
+        'last_update' => 0,
+        'lists' => array()
+    );
+    
+    foreach ($blocklists as $id => $list) {
+        if ($list['enabled']) {
+            $stats['enabled']++;
+        }
+        
+        $stats['total_ips'] += isset($list['count']) ? $list['count'] : 0;
+        
+        if (isset($list['last_update']) && $list['last_update'] > $stats['last_update']) {
+            $stats['last_update'] = $list['last_update'];
+        }
+        
+        $stats['lists'][$id] = array(
+            'name' => $list['name'],
+            'enabled' => (int)$list['enabled'],
+            'ips' => isset($list['count']) ? $list['count'] : 0,
+            'last_update' => isset($list['last_update']) ? $list['last_update'] : 0
+        );
+    }
+    
+    return $stats;
+}
+
+/**
+ * Save blocklists configuration
+ * 
+ * @param array $blocklists Blocklists data
+ * @return bool
+ */
+function csf_blocklist_save($blocklists) {
+    $blocklist_file = CSF_CONFIG_DIR . '/blocklists.json';
+    
+    return csf_file_write($blocklist_file, json_encode($blocklists, JSON_PRETTY_PRINT));
+}
+
+/**
+ * Auto-update all enabled blocklists
+ * 
+ * @return array Update results
+ */
+function csf_blocklist_auto_update() {
+    $blocklists = csf_blocklist_get_list();
+    $results = array();
+    $now = time();
+    
+    foreach ($blocklists as $id => $list) {
+        if (!$list['enabled']) {
+            continue;
+        }
+        
+        $next_update = $list['last_update'] + $list['update_interval'];
+        
+        if ($now < $next_update) {
+            continue;
+        }
+        
+        $results[$id] = csf_blocklist_update($id);
+    }
+    
+    return $results;
+}
+
+/**
+ * Cleanup old blocklist data
+ * 
+ * @return int Number of cleaned files
+ */
+function csf_blocklist_cleanup() {
+    $blocklists_dir = CSF_VAR_DIR . '/blocklists';
+    $blocklists = csf_blocklist_get_list();
+    $cleaned = 0;
+    
+    if (!is_dir($blocklists_dir)) {
+        return 0;
+    }
+    
+    $files = scandir($blocklists_dir);
+    
+    foreach ($files as $file) {
+        if ($file === '.' || $file === '..') {
+            continue;
+        }
+        
+        $file_path = $blocklists_dir . '/' . $file;
+        $id = str_replace('.json', '', $file);
+        
+        if (!isset($blocklists[$id])) {
+            if (@unlink($file_path)) {
+                $cleaned++;
+            }
+        }
+    }
+    
+    if ($cleaned > 0) {
+        csf_log('Cleaned ' . $cleaned . ' blocklist files', 'BLOCKLIST');
+    }
+    
+    return $cleaned;
+}
+
